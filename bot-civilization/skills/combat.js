@@ -1,0 +1,123 @@
+const { goals } = require('mineflayer-pathfinder');
+const { sleep } = require('../shared/utils');
+const civ = require('../core/civilization');
+
+const HOSTILE_MOBS = [
+  'zombie',
+  'skeleton',
+  'spider',
+  'creeper',
+  'enderman',
+  'witch',
+  'pillager',
+  'husk',
+  'stray',
+  'drowned',
+  'phantom',
+  'cave_spider',
+  'zombified_piglin',
+  'piglin_brute',
+];
+const SWORDS = ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'];
+const FOODS = [
+  'golden_apple',
+  'cooked_beef',
+  'cooked_chicken',
+  'bread',
+  'apple',
+  'carrot',
+  'potato',
+  'cooked_porkchop',
+];
+
+module.exports = function combatSkill(bot, mcData) {
+  let active = false;
+  let interval = null;
+
+  function getNearestHostile() {
+    return Object.values(bot.entities).find(e => {
+      if (!e?.name || e.type !== 'mob') return false;
+      return (
+        HOSTILE_MOBS.includes(e.name.toLowerCase()) &&
+        bot.entity.position.distanceTo(e.position) < 24
+      );
+    });
+  }
+
+  function isViable() {
+    return !!getNearestHostile();
+  }
+
+  async function run() {
+    if (active) return;
+    active = true;
+
+    try {
+      // Auto makan jika lapar
+      if (bot.food < 14) {
+        const food = bot.inventory.items().find(i => FOODS.includes(i.name));
+        if (food) {
+          await bot.equip(food, 'hand');
+          await bot.consume().catch(() => {});
+        }
+      }
+
+      const hostile = getNearestHostile();
+
+      if (!hostile) {
+        // Tidak ada mob — update threat state
+        civ.updateState(s => {
+          s.threats.hostileMobs = false;
+        });
+        active = false;
+        return;
+      }
+
+      const dist = bot.entity.position.distanceTo(hostile.position).toFixed(1);
+      console.log(`[${bot.username}] ⚔️ Menyerang ${hostile.name} (${dist} blok)`);
+
+      // Equip sword terbaik
+      for (const sword of SWORDS) {
+        const item = bot.inventory.items().find(i => i.name === sword);
+        if (item) {
+          await bot.equip(item, 'hand');
+          break;
+        }
+      }
+
+      await bot.pathfinder.goto(
+        new goals.GoalNear(hostile.position.x, hostile.position.y, hostile.position.z, 2)
+      );
+      bot.attack(hostile);
+      await sleep(600);
+
+      // Update threat
+      civ.updateState(s => {
+        s.threats.hostileMobs = true;
+        s.threats.lastThreatAt = new Date().toISOString();
+      });
+    } catch (err) {
+      console.log(`[${bot.username}] [combat] ${err.message}`);
+    }
+
+    active = false;
+  }
+
+  return {
+    name: 'combat',
+    label: '⚔️ Combat',
+    isViable,
+    start() {
+      civ.addLog(`[${bot.username}] ⚔️ Mulai combat`);
+      interval = setInterval(run, 800);
+    },
+    stop() {
+      if (interval) clearInterval(interval);
+      interval = null;
+      active = false;
+      civ.updateState(s => {
+        s.threats.hostileMobs = false;
+      });
+    },
+  };
+};

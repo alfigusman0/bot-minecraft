@@ -1,0 +1,20 @@
+{
+  "name": "bot-civilization",
+  "version": "1.0.0",
+  "description": "5 Minecraft bots that collaborate to build a civilization",
+  "main": "bot.js",
+  "scripts": {
+    "start": "pm2 start ecosystem.config.js",
+    "stop": "pm2 stop ecosystem.config.js",
+    "restart": "pm2 restart ecosystem.config.js",
+    "logs": "pm2 logs",
+    "status": "pm2 status",
+    "monit": "pm2 monit"
+  },
+  "dependencies": {
+    "minecraft-data": "^3.68.0",
+    "mineflayer": "^4.23.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "vec3": "^0.1.10"
+  }
+}
