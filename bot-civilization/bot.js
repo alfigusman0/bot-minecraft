@@ -24,6 +24,8 @@ const loggingSkill = require('./skills/logging');
 const combatSkill = require('./skills/combat');
 const buildingSkill = require('./skills/building');
 const craftingSkill = require('./skills/crafting');
+const huntingSkill = require('./skills/hunting');
+const sleepingSkill = require('./skills/sleeping');
 
 // ──────────────────────────────────────────────
 // KONFIGURASI
@@ -73,6 +75,8 @@ function createBot() {
       combat: combatSkill(bot, mcData),
       building: buildingSkill(bot, mcData),
       crafting: craftingSkill(bot, mcData),
+      hunting: huntingSkill(bot, mcData),
+      sleeping: sleepingSkill(bot, mcData),
     };
 
     // Daftarkan bot ke civilization state

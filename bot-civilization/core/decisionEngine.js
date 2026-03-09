@@ -35,10 +35,37 @@ const PHASE_THRESHOLDS = {
 
 // Skill priority per fase peradaban
 const PHASE_SKILL_PRIORITY = {
-  BOOTSTRAP: ['logging', 'mining', 'farming', 'combat', 'building'],
-  SURVIVAL: ['farming', 'combat', 'mining', 'logging', 'building'],
-  GROWTH: ['mining', 'farming', 'combat', 'logging', 'building'],
-  CIVILIZATION: ['building', 'farming', 'mining', 'combat', 'logging'],
+  BOOTSTRAP: [
+    'sleeping',
+    'combat',
+    'logging',
+    'mining',
+    'hunting',
+    'farming',
+    'crafting',
+    'building',
+  ],
+  SURVIVAL: [
+    'sleeping',
+    'combat',
+    'hunting',
+    'farming',
+    'mining',
+    'logging',
+    'crafting',
+    'building',
+  ],
+  GROWTH: ['sleeping', 'combat', 'mining', 'hunting', 'farming', 'logging', 'crafting', 'building'],
+  CIVILIZATION: [
+    'sleeping',
+    'combat',
+    'building',
+    'farming',
+    'hunting',
+    'mining',
+    'crafting',
+    'logging',
+  ],
 };
 
 /**
