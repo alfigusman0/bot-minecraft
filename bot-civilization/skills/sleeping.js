@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const { sleep } = require('../shared/utils');
+const { sleep } = require('../shared/utils'); // ← fungsi sleep(ms)
 const civ = require('../core/civilization');
 
 const BED_TYPES = [
@@ -34,94 +34,160 @@ const WOOL_TYPES = [
 module.exports = function sleepingSkill(bot, mcData) {
   let active = false;
   let isSleeping = false;
+  let myBedPos = null; // Posisi bed milik bot ini
   let checkTimer = null;
 
   function isNight() {
-    // Waktu Minecraft: 0 = siang, 13000 = mulai malam, 23000 = akhir malam
     const time = bot.time?.timeOfDay ?? 0;
     return time >= 12500 && time <= 23500;
   }
 
   function isViable() {
-    return isNight() && !isSleeping;
+    // Jangan masuk jika sudah tidur
+    if (isSleeping) return false;
+    return isNight();
   }
 
-  function findNearestBed() {
+  // Cari bed yang TIDAK sedang dipakai bot lain
+  function findFreeBed() {
     const bedIds = BED_TYPES.map(b => mcData.blocksByName[b]?.id).filter(Boolean);
-    if (bedIds.length === 0) return null;
-    return bot.findBlock({ matching: bedIds, maxDistance: 32 });
+    if (!bedIds.length) return null;
+
+    // Ambil posisi bed yang sedang dipakai bot lain dari civ state
+    const state = civ.getState();
+    const usedBeds = Object.entries(state.bots)
+      .filter(([name, info]) => name !== bot.username && info.bedPos)
+      .map(([, info]) => info.bedPos);
+
+    // Cari bed yang tidak ada di usedBeds
+    return bot.findBlock({
+      matching: bedIds,
+      maxDistance: 32,
+      useExtraInfo: b => {
+        const posKey = `${b.position.x},${b.position.y},${b.position.z}`;
+        return !usedBeds.includes(posKey);
+      },
+    });
   }
 
-  async function tryPlaceBed() {
-    // Cek apakah punya bed di inventory
+  async function goSleep(bedBlock) {
+    try {
+      // Claim bed ini dulu di state agar bot lain tidak pakai
+      const posKey = `${bedBlock.position.x},${bedBlock.position.y},${bedBlock.position.z}`;
+      myBedPos = posKey;
+      civ.updateBotStatus(bot.username, { bedPos: posKey, status: 'sleeping' });
+
+      await bot.pathfinder.goto(
+        new goals.GoalNear(bedBlock.position.x, bedBlock.position.y, bedBlock.position.z, 2)
+      );
+
+      // Cek sekali lagi bed masih ada
+      const freshBed = bot.blockAt(bedBlock.position);
+      if (!freshBed || !BED_TYPES.includes(freshBed.name)) {
+        releaseBed();
+        return;
+      }
+
+      isSleeping = true;
+      console.log(
+        `[${bot.username}] 😴 Tidur di (${bedBlock.position.x},${bedBlock.position.y},${bedBlock.position.z})`
+      );
+      civ.addLog(`[${bot.username}] 😴 Tidur`);
+
+      await bot.sleep(bedBlock); // ← bot.sleep(), bukan sleep() dari utils
+    } catch (err) {
+      console.log(`[${bot.username}] [sleeping] Gagal tidur: ${err.message}`);
+      isSleeping = false;
+      releaseBed();
+    }
+  }
+
+  function releaseBed() {
+    myBedPos = null;
+    civ.updateBotStatus(bot.username, { bedPos: null });
+  }
+
+  async function placeBedAndSleep() {
+    // Cek punya bed di inventory
     const bedInInv = bot.inventory.items().find(i => BED_TYPES.includes(i.name));
-    if (bedInInv) return await placeAndSleep(bedInInv);
+    if (bedInInv) {
+      await placeBed(bedInInv);
+      return;
+    }
 
-    // Tidak punya bed — coba craft dari wool + planks
-    console.log(`[${bot.username}] Tidak punya bed, coba craft...`);
-    await tryCraftBed();
-  }
-
-  async function tryCraftBed() {
+    // Coba craft bed
     const hasWool = bot.inventory.items().find(i => WOOL_TYPES.includes(i.name) && i.count >= 3);
     const hasPlank = bot.inventory.items().find(i => i.name.includes('_planks') && i.count >= 3);
-
     if (!hasWool || !hasPlank) {
-      console.log(`[${bot.username}] Bahan bed tidak cukup (butuh 3 wool + 3 planks).`);
+      console.log(`[${bot.username}] Tidak punya bed & bahan tidak cukup untuk craft`);
       return;
     }
 
     const tableId = mcData.blocksByName['crafting_table']?.id;
-    const craftTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
-
-    if (!craftTable) {
-      console.log(`[${bot.username}] Tidak ada crafting table untuk buat bed.`);
+    const table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
+    if (!table) {
+      console.log(`[${bot.username}] Tidak ada crafting table untuk craft bed`);
       return;
     }
 
     try {
-      // Cari resep bed yang cocok dengan wool yang dimiliki
-      const woolName = hasWool.name;
-      const bedName = woolName.replace('_wool', '_bed');
+      const bedName = hasWool.name.replace('_wool', '_bed');
       const bedItemId = mcData.itemsByName[bedName]?.id;
       if (!bedItemId) return;
 
-      const recipes = await bot.recipesFor(bedItemId, null, 1, craftTable);
-      if (recipes?.length > 0) {
-        await bot.pathfinder.goto(
-          new goals.GoalNear(craftTable.position.x, craftTable.position.y, craftTable.position.z, 2)
-        );
-        await bot.craft(recipes[0], 1, craftTable);
-        console.log(`[${bot.username}] 🛏️ Berhasil craft ${bedName}`);
-        civ.addLog(`[${bot.username}] 🛏️ Craft ${bedName}`);
+      const recipes = await bot.recipesFor(bedItemId, null, 1, table);
+      if (!recipes?.length) return;
 
-        // Sekarang coba pakai bed yang baru di-craft
-        const newBed = bot.inventory.items().find(i => BED_TYPES.includes(i.name));
-        if (newBed) await placeAndSleep(newBed);
-      }
+      await bot.pathfinder.goto(
+        new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2)
+      );
+      await bot.craft(recipes[0], 1, table);
+      console.log(`[${bot.username}] 🛏️ Craft ${bedName} berhasil`);
+      await sleep(500);
+
+      const newBed = bot.inventory.items().find(i => BED_TYPES.includes(i.name));
+      if (newBed) await placeBed(newBed);
     } catch (err) {
       console.log(`[${bot.username}] Gagal craft bed: ${err.message}`);
     }
   }
 
-  async function placeAndSleep(bedItem) {
+  async function placeBed(bedItem) {
     try {
       await bot.equip(bedItem, 'hand');
 
-      // Cari tanah datar untuk taruh bed
+      // Cari tanah kosong di dekat bot untuk taruh bed
       const pos = bot.entity.position.floored();
-      const below = bot.blockAt(pos.offset(0, -1, 0));
-      const inFront = bot.blockAt(pos.offset(1, 0, 0));
-      const inFront2 = bot.blockAt(pos.offset(1, -1, 0));
+      const candidates = [
+        pos.offset(1, 0, 0),
+        pos.offset(-1, 0, 0),
+        pos.offset(0, 0, 1),
+        pos.offset(0, 0, -1),
+      ];
 
-      if (below && inFront?.name === 'air' && inFront2?.name !== 'air') {
-        await bot.placeBlock(inFront2, new Vec3(0, 1, 0));
-        await sleep(500);
+      for (const candidate of candidates) {
+        const blockAt = bot.blockAt(candidate);
+        const blockBelow = bot.blockAt(candidate.offset(0, -1, 0));
+        const blockAbove = bot.blockAt(candidate.offset(0, 1, 0));
 
-        // Cari bed yang baru dipasang
-        const placedBed = findNearestBed();
-        if (placedBed) {
-          await sleepOnBed(placedBed);
+        if (
+          blockAt?.name === 'air' &&
+          blockAbove?.name === 'air' &&
+          blockBelow &&
+          blockBelow.name !== 'air'
+        ) {
+          try {
+            await bot.placeBlock(blockBelow, new Vec3(0, 1, 0));
+            await sleep(600);
+
+            const placed = findFreeBed();
+            if (placed) {
+              await goSleep(placed);
+              return;
+            }
+          } catch (_) {
+            continue;
+          }
         }
       }
     } catch (err) {
@@ -129,51 +195,29 @@ module.exports = function sleepingSkill(bot, mcData) {
     }
   }
 
-  async function sleepOnBed(bedBlock) {
-    try {
-      await bot.pathfinder.goto(
-        new goals.GoalNear(bedBlock.position.x, bedBlock.position.y, bedBlock.position.z, 2)
-      );
-
-      isSleeping = true;
-      civ.updateBotStatus(bot.username, { status: 'sleeping' });
-      civ.addLog(
-        `[${bot.username}] 😴 Tidur di (${bedBlock.position.x},${bedBlock.position.y},${bedBlock.position.z})`
-      );
-      console.log(`[${bot.username}] 😴 Tidur...`);
-
-      await bot.sleep(bedBlock);
-    } catch (err) {
-      isSleeping = false;
-      console.log(`[${bot.username}] Gagal tidur: ${err.message}`);
-    }
-  }
-
   async function run() {
+    // Jangan jalankan jika sudah tidur atau sedang proses
     if (active || isSleeping) return;
     if (!isNight()) return;
+
     active = true;
-
     try {
-      // Cari bed terdekat
-      const nearBed = findNearestBed();
-
-      if (nearBed) {
-        await sleepOnBed(nearBed);
+      const freeBed = findFreeBed();
+      if (freeBed) {
+        await goSleep(freeBed);
       } else {
-        // Tidak ada bed di sekitar — coba buat/taruh
-        await tryPlaceBed();
+        await placeBedAndSleep();
       }
     } catch (err) {
       console.log(`[${bot.username}] [sleeping] ${err.message}`);
     }
-
     active = false;
   }
 
-  // Dengarkan event wake up
+  // Event: bot berhasil bangun
   function onWake() {
     isSleeping = false;
+    releaseBed();
     console.log(`[${bot.username}] ☀️ Bangun!`);
     civ.updateBotStatus(bot.username, { status: 'working' });
     civ.addLog(`[${bot.username}] ☀️ Bangun, lanjut kerja`);
@@ -192,9 +236,11 @@ module.exports = function sleepingSkill(bot, mcData) {
       checkTimer = null;
       active = false;
       bot.removeListener('wake', onWake);
+      // Bangunkan paksa jika masih tidur
       if (isSleeping) {
         bot.wake().catch(() => {});
         isSleeping = false;
+        releaseBed();
       }
     },
   };

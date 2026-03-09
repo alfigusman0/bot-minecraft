@@ -1,5 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const WOOD_TYPES = [
@@ -131,13 +131,13 @@ module.exports = function loggingSkill(bot, mcData) {
         if (isNearStructure(currentPos)) break;
 
         await bot.dig(current);
-        await sleep(300);
+        await waitMs(300);
         currentPos = currentPos.offset(0, 1, 0);
         count++;
       }
 
       if (count > 0) {
-        await sleep(800);
+        await waitMs(800);
         civ.addResources({ wood: count });
         civ.addLog(`[${bot.username}] 🪓 Tebang ${count} log di (${pos.x},${pos.y},${pos.z})`);
       }
