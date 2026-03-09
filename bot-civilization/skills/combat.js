@@ -1,5 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const HOSTILE_MOBS = [
@@ -89,7 +89,7 @@ module.exports = function combatSkill(bot, mcData) {
         new goals.GoalNear(hostile.position.x, hostile.position.y, hostile.position.z, 2)
       );
       bot.attack(hostile);
-      await sleep(600);
+      await waitMs(600);
 
       // Update threat
       civ.updateState(s => {

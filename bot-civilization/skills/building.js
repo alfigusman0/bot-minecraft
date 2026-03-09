@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const MATERIALS = [
@@ -98,7 +98,7 @@ module.exports = function buildingSkill(bot, mcData) {
           const below = bot.blockAt(pos.offset(0, -1, 0));
           if (!below || below.name === 'air') continue;
           await bot.placeBlock(below, new Vec3(0, 1, 0));
-          await sleep(250);
+          await waitMs(250);
           placed++;
           civ.addResources({ cobblestone: -1 });
         } catch (_) {

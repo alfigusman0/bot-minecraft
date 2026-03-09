@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const CROP_TYPES = [
@@ -50,7 +50,7 @@ module.exports = function farmingSkill(bot, mcData) {
           if (!fresh || fresh.getProperties().age !== crop.matureAge) continue;
 
           await bot.dig(fresh);
-          await sleep(600);
+          await waitMs(600);
 
           // Tanam ulang
           const seed = bot.inventory.items().find(i => i.name === crop.seedName);

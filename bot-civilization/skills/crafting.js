@@ -1,4 +1,4 @@
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 // Daftar resep prioritas
@@ -94,7 +94,7 @@ module.exports = function craftingSkill(bot, mcData) {
           if (recipeData && recipeData.length > 0) {
             await bot.craft(recipeData[0], 1, craftTable);
             civ.addLog(`[${bot.username}] 🔨 Craft ${recipe.result}`);
-            await sleep(500);
+            await waitMs(500);
             break;
           }
         } catch (_) {

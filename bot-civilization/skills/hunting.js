@@ -1,5 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const PREY = ['cow', 'chicken', 'pig', 'sheep', 'rabbit', 'salmon', 'cod'];
@@ -68,11 +68,11 @@ module.exports = function huntingSkill(bot, mcData) {
       let attempts = 0;
       while (prey.isValid && attempts < 10) {
         bot.attack(prey);
-        await sleep(700);
+        await waitMs(700);
         attempts++;
       }
 
-      await sleep(1000); // Tunggu item drop
+      await waitMs(1000); // Tunggu item drop
 
       civ.addResources({ food: 3 });
       civ.addLog(`[${bot.username}] 🥩 Berburu ${prey.name} berhasil`);

@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const { sleep } = require('../shared/utils'); // ← fungsi sleep(ms)
+const { sleep: waitMs } = require('../shared/utils'); // ← fungsi sleep(ms)
 const civ = require('../core/civilization');
 
 const BED_TYPES = [
@@ -143,7 +143,7 @@ module.exports = function sleepingSkill(bot, mcData) {
       );
       await bot.craft(recipes[0], 1, table);
       console.log(`[${bot.username}] 🛏️ Craft ${bedName} berhasil`);
-      await sleep(500);
+      await waitMs(500);
 
       const newBed = bot.inventory.items().find(i => BED_TYPES.includes(i.name));
       if (newBed) await placeBed(newBed);
@@ -178,7 +178,7 @@ module.exports = function sleepingSkill(bot, mcData) {
         ) {
           try {
             await bot.placeBlock(blockBelow, new Vec3(0, 1, 0));
-            await sleep(600);
+            await waitMs(600);
 
             const placed = findFreeBed();
             if (placed) {

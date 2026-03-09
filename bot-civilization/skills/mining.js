@@ -1,5 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
-const { sleep } = require('../shared/utils');
+const { sleep: waitMs } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const ORE_PRIORITY = [
@@ -76,7 +76,7 @@ module.exports = function miningSkill(bot, mcData) {
       }
 
       await bot.dig(block);
-      await sleep(300);
+      await waitMs(300);
 
       // Update resource peradaban
       civ.addResources({ [meta.resource]: 1, stone: meta.name === 'stone' ? 1 : 0 });

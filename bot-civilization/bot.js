@@ -15,7 +15,7 @@ const { Vec3 } = require('vec3');
 const civ = require('./core/civilization');
 const engine = require('./core/decisionEngine');
 const taskQueue = require('./core/taskQueue');
-const { sleep } = require('./shared/utils');
+const { sleep: waitMs } = require('./shared/utils');
 
 // Skills
 const farmingSkill = require('./skills/farming');
@@ -347,14 +347,14 @@ function createBot() {
     civ.updateBotStatus(USERNAME, { status: 'dead' });
     taskQueue.releaseBot(USERNAME);
     stopAll();
-    await sleep(2000);
+    await waitMs(2000);
     bot.respawn();
   });
 
   bot.on('respawn', async () => {
     console.log(`[${USERNAME}] 🔄 Respawn`);
     civ.updateBotStatus(USERNAME, { status: 'respawned' });
-    await sleep(2000);
+    await waitMs(2000);
     // Restart skill utama setelah respawn
     startSkill(PRIMARY_SKILL);
     if (!decideTimer) decideTimer = setInterval(() => makeDecision(), 10000);
