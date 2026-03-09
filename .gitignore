@@ -5,9 +5,11 @@ package-lock.json
 # Logs
 logs/
 *.log
+npm-debug.log*
 
 # PM2
 .pm2/
+ecosystem.config.js.bak
 
 # Environment variables
 .env
@@ -16,10 +18,20 @@ logs/
 
 # OS files
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Debug
+.node_repl_history
