@@ -16,11 +16,11 @@ const CONFIG = {
   port: 25565,
   username: process.env.BOT_USERNAME || 'SiPetani',
   auth: 'offline',
-  version: '1.21.1',
+  version: '1.21.11',
 };
 
 // Owner yang boleh kasih perintah
-const OWNERS = ['aLG30', 'Kitty'];
+const OWNERS = ['aLG30'];
 
 function createBot() {
   const bot = mineflayer.createBot(CONFIG);
@@ -355,9 +355,9 @@ function createBot() {
   bot.on('error', err => console.log(`[${bot.username}] ❌ Error:`, err.message));
   bot.on('kicked', reason => console.log(`[${bot.username}] 🚫 Kicked:`, reason));
   bot.on('end', () => {
-    console.log(`[${bot.username}] 🔌 Disconnect. Reconnect dalam 10 detik...`);
+    console.log(`[${bot.username}] 🔌 Disconnect. Reconnect dalam 30 detik...`);
     stopCurrentSkill();
-    setTimeout(createBot, 10000);
+    setTimeout(createBot, 30000);
   });
 }
 
