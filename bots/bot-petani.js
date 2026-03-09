@@ -46,7 +46,7 @@ function createBot() {
 
     const block = bot.findBlock({
       matching: cropId,
-      maxDistance: 16,
+      maxDistance: 32,
       useExtraInfo: b => b.getProperties().age === 7,
     });
 
