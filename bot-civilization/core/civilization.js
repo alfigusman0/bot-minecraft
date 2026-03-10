@@ -1,16 +1,10 @@
-/**
- * CIVILIZATION STATE
- * Shared memory antar semua bot (via file JSON di disk).
- * Setiap bot membaca & menulis state ini untuk koordinasi.
- */
-
 const fs = require('fs');
 const path = require('path');
 
 const STATE_FILE = path.join(__dirname, '../logs/civilization.json');
 
 const DEFAULT_STATE = {
-  phase: 'BOOTSTRAP', // BOOTSTRAP → SURVIVAL → GROWTH → CIVILIZATION
+  phase: 'BOOTSTRAP',
   resources: {
     wood: 0,
     stone: 0,
@@ -23,41 +17,19 @@ const DEFAULT_STATE = {
     food: 0,
     cobblestone: 0,
   },
-  needs: {
-    // Apa yang sedang dibutuhkan peradaban
-    food: true,
-    wood: true,
-    stone: true,
-    iron: false,
-    shelter: false,
-    defense: false,
-  },
-  structures: {
-    // Apakah struktur sudah dibangun
-    farm: false,
-    storage: false,
-    house: false,
-    wall: false,
-    mine: false,
-  },
-  threats: {
-    // Ancaman aktif
-    hostileMobs: false,
-    lastThreatAt: null,
-  },
-  bots: {
-    // Status tiap bot: { skill, status, lastSeen, pos }
-  },
-  tasks: [], // Antrian tugas global
-  log: [], // Log aktivitas peradaban (max 50 baris)
+  needs: { food: true, wood: true, stone: true, iron: false, shelter: false, defense: false },
+  structures: { farm: false, storage: false, house: false, wall: false, mine: false },
+  threats: { hostileMobs: false, lastThreatAt: null },
+  bots: {},
+  tasks: [],
+  log: [],
   updatedAt: null,
 };
 
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
-      const raw = fs.readFileSync(STATE_FILE, 'utf8');
-      return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+      return { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) };
     }
   } catch (_) {}
   return { ...DEFAULT_STATE };
@@ -75,12 +47,11 @@ function saveState(state) {
 function getState() {
   return loadState();
 }
-
 function updateState(updater) {
-  const state = loadState();
-  updater(state);
-  saveState(state);
-  return state;
+  const s = loadState();
+  updater(s);
+  saveState(s);
+  return s;
 }
 
 function addLog(message) {
@@ -92,20 +63,31 @@ function addLog(message) {
 
 function updateBotStatus(username, info) {
   updateState(s => {
-    s.bots[username] = {
-      ...(s.bots[username] || {}),
-      ...info,
-      lastSeen: new Date().toISOString(),
-    };
+    s.bots[username] = { ...(s.bots[username] || {}), ...info, lastSeen: new Date().toISOString() };
   });
 }
 
 function addResources(items) {
   updateState(s => {
     for (const [key, val] of Object.entries(items)) {
-      if (s.resources[key] !== undefined) {
+      if (s.resources[key] !== undefined)
         s.resources[key] = Math.max(0, (s.resources[key] || 0) + val);
-      }
+    }
+  });
+}
+
+function addTask(task) {
+  updateState(s => {
+    const exists = s.tasks.some(t => t.type === task.type && t.status === 'PENDING');
+    if (!exists) {
+      s.tasks.push({
+        id: `${task.type}_${Date.now()}`,
+        status: 'PENDING',
+        priority: task.priority || 5,
+        createdAt: new Date().toISOString(),
+        ...task,
+      });
+      s.tasks.sort((a, b) => a.priority - b.priority);
     }
   });
 }
@@ -128,26 +110,7 @@ function completeTask(taskId) {
   updateState(s => {
     const t = s.tasks.find(t => t.id === taskId);
     if (t) t.status = 'DONE';
-    // Bersihkan task DONE yang sudah lama
     s.tasks = s.tasks.filter(t => t.status !== 'DONE').slice(0, 30);
-  });
-}
-
-function addTask(task) {
-  updateState(s => {
-    // Jangan duplikat task yang sama
-    const exists = s.tasks.some(t => t.type === task.type && t.status === 'PENDING');
-    if (!exists) {
-      s.tasks.push({
-        id: `${task.type}_${Date.now()}`,
-        status: 'PENDING',
-        priority: task.priority || 5,
-        createdAt: new Date().toISOString(),
-        ...task,
-      });
-      // Urutkan berdasarkan prioritas (1 = paling penting)
-      s.tasks.sort((a, b) => a.priority - b.priority);
-    }
   });
 }
 
@@ -157,7 +120,7 @@ module.exports = {
   addLog,
   updateBotStatus,
   addResources,
+  addTask,
   claimTask,
   completeTask,
-  addTask,
 };

@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const { sleep: waitMs } = require('../shared/utils');
+const { waitMs, equipBest, withUnstuck } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const MATERIALS = [
@@ -13,31 +13,25 @@ const MATERIALS = [
   'bricks',
 ];
 
-// Blueprint berdasarkan fase
 const BLUEPRINTS = {
-  // Platform 7x7 = base camp
   base: origin => {
     const bp = [];
     for (let x = 0; x < 7; x++)
-      for (let z = 0; z < 7; z++)
-        bp.push({ pos: new Vec3(origin.x + x, origin.y, origin.z + z), type: 'floor' });
+      for (let z = 0; z < 7; z++) bp.push(new Vec3(origin.x + x, origin.y, origin.z + z));
     return bp;
   },
-  // Dinding 9x9
   wall: origin => {
     const bp = [];
-    for (let x = 0; x < 9; x++) {
+    for (let x = 0; x < 9; x++)
       for (let h = 0; h < 3; h++) {
-        bp.push({ pos: new Vec3(origin.x + x, origin.y + h, origin.z), type: 'wall' });
-        bp.push({ pos: new Vec3(origin.x + x, origin.y + h, origin.z + 8), type: 'wall' });
+        bp.push(new Vec3(origin.x + x, origin.y + h, origin.z));
+        bp.push(new Vec3(origin.x + x, origin.y + h, origin.z + 8));
       }
-    }
-    for (let z = 1; z < 8; z++) {
+    for (let z = 1; z < 8; z++)
       for (let h = 0; h < 3; h++) {
-        bp.push({ pos: new Vec3(origin.x, origin.y + h, origin.z + z), type: 'wall' });
-        bp.push({ pos: new Vec3(origin.x + 8, origin.y + h, origin.z + z), type: 'wall' });
+        bp.push(new Vec3(origin.x, origin.y + h, origin.z + z));
+        bp.push(new Vec3(origin.x + 8, origin.y + h, origin.z + z));
       }
-    }
     return bp;
   },
 };
@@ -56,69 +50,55 @@ module.exports = function buildingSkill(bot, mcData) {
   function loadBlueprint() {
     const state = civ.getState();
     const base = origin || bot.entity.position.floored().offset(-3, -1, -3);
-
-    if (!state.structures.farm) {
-      blueprint = BLUEPRINTS.base(base);
-    } else if (!state.structures.wall && state.phase === 'CIVILIZATION') {
-      blueprint = BLUEPRINTS.wall(base);
-    } else {
-      blueprint = BLUEPRINTS.base(base);
-    }
-
+    blueprint = state.structures.farm ? BLUEPRINTS.wall(base) : BLUEPRINTS.base(base);
     bpIndex = 0;
   }
 
   async function run() {
     if (active) return;
     active = true;
-
     try {
-      if (blueprint.length === 0) loadBlueprint();
+      if (!blueprint.length) loadBlueprint();
 
       const material = bot.inventory.items().find(i => MATERIALS.includes(i.name));
       if (!material) {
-        civ.addLog(`[${bot.username}] ⚠️ Tidak ada material bangunan!`);
         active = false;
         return;
       }
 
       await bot.equip(material, 'hand');
 
-      // Lanjut dari index terakhir
       let placed = 0;
       while (bpIndex < blueprint.length && placed < 5) {
-        const { pos } = blueprint[bpIndex];
+        const pos = blueprint[bpIndex++];
         const block = bot.blockAt(pos);
-
-        bpIndex++;
-        if (block && block.name !== 'air') continue; // sudah ada blok
+        if (block && block.name !== 'air') continue;
 
         try {
-          await bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3));
+          await withUnstuck(bot, () =>
+            bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 3))
+          );
           const below = bot.blockAt(pos.offset(0, -1, 0));
           if (!below || below.name === 'air') continue;
           await bot.placeBlock(below, new Vec3(0, 1, 0));
           await waitMs(250);
           placed++;
           civ.addResources({ cobblestone: -1 });
-        } catch (_) {
-          /* skip posisi gagal */
-        }
+        } catch (_) {}
       }
 
       if (bpIndex >= blueprint.length) {
-        // Blueprint selesai
         const state = civ.getState();
         if (!state.structures.farm) {
           civ.updateState(s => {
             s.structures.farm = true;
           });
-          civ.addLog(`[${bot.username}] 🏗️ Farm selesai dibangun!`);
+          civ.addLog(`[${bot.username}] 🏗️ Base selesai!`);
         } else if (!state.structures.wall) {
           civ.updateState(s => {
             s.structures.wall = true;
           });
-          civ.addLog(`[${bot.username}] 🏗️ Tembok selesai dibangun!`);
+          civ.addLog(`[${bot.username}] 🏗️ Tembok selesai!`);
         }
         blueprint = [];
         bpIndex = 0;
@@ -126,7 +106,6 @@ module.exports = function buildingSkill(bot, mcData) {
     } catch (err) {
       console.log(`[${bot.username}] [building] ${err.message}`);
     }
-
     active = false;
   }
 

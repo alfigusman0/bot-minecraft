@@ -1,5 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
-const { sleep: waitMs } = require('../shared/utils');
+const { waitMs, equipBest, withUnstuck } = require('../shared/utils');
 const civ = require('../core/civilization');
 
 const HOSTILE_MOBS = [
@@ -15,19 +15,52 @@ const HOSTILE_MOBS = [
   'drowned',
   'phantom',
   'cave_spider',
-  'zombified_piglin',
-  'piglin_brute',
 ];
+
 const SWORDS = ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'];
+const ARMORS = {
+  head: [
+    'netherite_helmet',
+    'diamond_helmet',
+    'iron_helmet',
+    'golden_helmet',
+    'chainmail_helmet',
+    'leather_helmet',
+  ],
+  torso: [
+    'netherite_chestplate',
+    'diamond_chestplate',
+    'iron_chestplate',
+    'golden_chestplate',
+    'chainmail_chestplate',
+    'leather_chestplate',
+  ],
+  legs: [
+    'netherite_leggings',
+    'diamond_leggings',
+    'iron_leggings',
+    'golden_leggings',
+    'chainmail_leggings',
+    'leather_leggings',
+  ],
+  feet: [
+    'netherite_boots',
+    'diamond_boots',
+    'iron_boots',
+    'golden_boots',
+    'chainmail_boots',
+    'leather_boots',
+  ],
+};
 const FOODS = [
   'golden_apple',
   'cooked_beef',
+  'cooked_porkchop',
   'cooked_chicken',
   'bread',
   'apple',
   'carrot',
   'potato',
-  'cooked_porkchop',
 ];
 
 module.exports = function combatSkill(bot, mcData) {
@@ -48,10 +81,17 @@ module.exports = function combatSkill(bot, mcData) {
     return !!getNearestHostile();
   }
 
+  async function equipArmor() {
+    // FIX BUG 2: Auto-equip armor terbaik
+    await equipBest(bot, ARMORS.head, 'head');
+    await equipBest(bot, ARMORS.torso, 'torso');
+    await equipBest(bot, ARMORS.legs, 'legs');
+    await equipBest(bot, ARMORS.feet, 'feet');
+  }
+
   async function run() {
     if (active) return;
     active = true;
-
     try {
       // Auto makan jika lapar
       if (bot.food < 14) {
@@ -62,10 +102,10 @@ module.exports = function combatSkill(bot, mcData) {
         }
       }
 
-      const hostile = getNearestHostile();
+      await equipArmor();
 
+      const hostile = getNearestHostile();
       if (!hostile) {
-        // Tidak ada mob — update threat state
         civ.updateState(s => {
           s.threats.hostileMobs = false;
         });
@@ -73,33 +113,25 @@ module.exports = function combatSkill(bot, mcData) {
         return;
       }
 
-      const dist = bot.entity.position.distanceTo(hostile.position).toFixed(1);
-      console.log(`[${bot.username}] ⚔️ Menyerang ${hostile.name} (${dist} blok)`);
+      // FIX BUG 2: Equip sword terbaik
+      await equipBest(bot, SWORDS, 'hand');
 
-      // Equip sword terbaik
-      for (const sword of SWORDS) {
-        const item = bot.inventory.items().find(i => i.name === sword);
-        if (item) {
-          await bot.equip(item, 'hand');
-          break;
-        }
-      }
-
-      await bot.pathfinder.goto(
-        new goals.GoalNear(hostile.position.x, hostile.position.y, hostile.position.z, 2)
+      await withUnstuck(bot, () =>
+        bot.pathfinder.goto(
+          new goals.GoalNear(hostile.position.x, hostile.position.y, hostile.position.z, 2)
+        )
       );
-      bot.attack(hostile);
-      await waitMs(600);
 
-      // Update threat
-      civ.updateState(s => {
-        s.threats.hostileMobs = true;
-        s.threats.lastThreatAt = new Date().toISOString();
-      });
+      if (hostile.isValid) {
+        bot.attack(hostile);
+        civ.updateState(s => {
+          s.threats.hostileMobs = true;
+        });
+      }
+      await waitMs(600);
     } catch (err) {
       console.log(`[${bot.username}] [combat] ${err.message}`);
     }
-
     active = false;
   }
 
