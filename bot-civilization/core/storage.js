@@ -1,12 +1,14 @@
 /**
- * STORAGE MANAGER — v3 fix
+ * STORAGE MANAGER — v4 Creative Edition
  *
- * Fix utama:
- * 1. GoalBlock (jarak 1) bukan GoalNear(2) agar bot tepat di sebelah chest
- * 2. Tidak pakai withUnstuck wrapper untuk pathfinding ke chest — timeout sendiri
- * 3. Scan SEMUA chest terdekat, retry satu per satu jika gagal
- * 4. Lock sederhana per-chest agar 2 bot tidak buka chest yang sama bersamaan
+ * Perubahan:
+ * - Bot creative (farming/building) bypass chest → langsung /give
+ * - Semua material selalu tersedia untuk dedicated bot
+ * - Chest system tetap berjalan untuk bot survival (mining, logging, dll)
+ * - Rate limit /give agar tidak spam chat
  */
+
+'use strict';
 
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
@@ -14,9 +16,10 @@ const { waitMs } = require('../shared/utils');
 const civ = require('./civilization');
 
 const INVENTORY_FULL_THRESHOLD = 4;
-const CHEST_OPEN_TIMEOUT = 8000; // ms tunggu openChest
-const PATHFIND_TO_CHEST_TIMEOUT = 12000; // ms pathfind ke chest
+const CHEST_OPEN_TIMEOUT = 8000;
+const PATHFIND_TO_CHEST_TIMEOUT = 12000;
 
+// Items yang selalu disimpan bot (tidak di-deposit)
 const KEEP_ITEMS = new Set([
   'netherite_pickaxe',
   'diamond_pickaxe',
@@ -33,6 +36,11 @@ const KEEP_ITEMS = new Set([
   'iron_sword',
   'stone_sword',
   'wooden_sword',
+  'netherite_hoe',
+  'diamond_hoe',
+  'iron_hoe',
+  'stone_hoe',
+  'wooden_hoe',
   'netherite_helmet',
   'diamond_helmet',
   'iron_helmet',
@@ -61,8 +69,11 @@ const KEEP_ITEMS = new Set([
   'bow',
   'crossbow',
   'trident',
+  'fishing_rod',
+  'shears',
   'crafting_table',
   'furnace',
+  'smoker',
   'white_bed',
   'orange_bed',
   'magenta_bed',
@@ -94,30 +105,58 @@ const KEEP_MIN = {
   stick: 8,
 };
 
-// Chest yang sedang dibuka bot tertentu (lock sederhana)
-// key = "x,y,z", value = botUsername
+// Chest locks — mencegah 2 bot buka chest yang sama bersamaan
 const chestLocks = {};
+function lockChest(key, user) {
+  chestLocks[key] = user;
+}
+function unlockChest(key) {
+  delete chestLocks[key];
+}
+function isChestLocked(key, me) {
+  return chestLocks[key] && chestLocks[key] !== me;
+}
 
-function lockChest(posKey, username) {
-  chestLocks[posKey] = username;
-}
-function unlockChest(posKey) {
-  delete chestLocks[posKey];
-}
-function isChestLocked(posKey, selfName) {
-  return chestLocks[posKey] && chestLocks[posKey] !== selfName;
-}
+// /give rate limiter
+const giveCache = new Map(); // itemName → lastGiveTime
+const GIVE_COOLDOWN_MS = 5000;
 
 module.exports = function createStorageManager(bot, mcData) {
+  // ── Deteksi apakah bot ini dalam creative mode ──────────────
+  function isCreative() {
+    return typeof bot.isCreativeMode === 'function' && bot.isCreativeMode();
+  }
+
+  // ── /give helper (creative only) ───────────────────────────
+  async function giveItem(itemName, amount = 64) {
+    if (!isCreative()) return false;
+
+    const now = Date.now();
+    const last = giveCache.get(itemName) ?? 0;
+    if (now - last < GIVE_COOLDOWN_MS) return true; // Sudah di-give baru-baru ini
+
+    const current = bot.inventory
+      .items()
+      .filter(i => i.name === itemName)
+      .reduce((s, i) => s + i.count, 0);
+
+    if (current >= amount) return true; // Sudah cukup
+
+    giveCache.set(itemName, now);
+    bot.chat(`/give ${bot.username} ${itemName} ${amount}`);
+    await waitMs(600);
+    console.log(`[${bot.username}] 🎁 /give ${itemName} ×${amount}`);
+    return true;
+  }
+
   // ── Inventory helpers ────────────────────────────────────────
   function getEmptySlots() {
-    // Mineflayer: slot 9-44 = inventory (36 slot total)
-    const total = 36;
-    const used = bot.inventory.items().length;
-    return total - used;
+    return 36 - bot.inventory.items().length;
   }
 
   function isInventoryFull() {
+    // Creative bot tidak pernah dianggap penuh (tidak perlu deposit)
+    if (isCreative()) return false;
     return getEmptySlots() <= INVENTORY_FULL_THRESHOLD;
   }
 
@@ -172,7 +211,6 @@ module.exports = function createStorageManager(bot, mcData) {
     return null;
   }
 
-  // ── Scan semua chest dalam radius, return array terurut jarak ─
   function findAllNearChests(maxDistance = 48) {
     const chestId = mcData.blocksByName['chest']?.id;
     if (!chestId) return [];
@@ -180,7 +218,6 @@ module.exports = function createStorageManager(bot, mcData) {
     const results = [];
     const seen = new Set();
 
-    // bot.findBlock hanya return 1, kita akali dengan useExtraInfo exclude
     for (let i = 0; i < 30; i++) {
       const found = bot.findBlock({
         matching: chestId,
@@ -192,7 +229,6 @@ module.exports = function createStorageManager(bot, mcData) {
       results.push(found);
     }
 
-    // Tambah chest dari registry yang mungkin di luar render distance
     for (const savedPos of getAllChestPositions()) {
       const key = posKey(savedPos);
       if (seen.has(key)) continue;
@@ -203,21 +239,16 @@ module.exports = function createStorageManager(bot, mcData) {
       }
     }
 
-    // Urutkan dari yang paling dekat
     results.sort(
       (a, b) =>
         bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)
     );
-
     return results;
   }
 
-  // ── Pathfind ke chest — GoalLookAtBlock agar tepat di sebelah ─
   async function goToChest(chestBlock) {
     const p = chestBlock.position;
-
     await Promise.race([
-      // GoalNear jarak 1 agar bot tepat di sebelah chest
       bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 1)),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Timeout pathfind ke chest')), PATHFIND_TO_CHEST_TIMEOUT)
@@ -225,7 +256,6 @@ module.exports = function createStorageManager(bot, mcData) {
     ]);
   }
 
-  // ── Open chest dengan timeout ────────────────────────────────
   async function openChestSafe(chestBlock) {
     return await Promise.race([
       bot.openChest(chestBlock),
@@ -235,35 +265,24 @@ module.exports = function createStorageManager(bot, mcData) {
     ]);
   }
 
-  // ── DEPOSIT ke satu chest ────────────────────────────────────
+  // ── DEPOSIT ─────────────────────────────────────────────────
   async function depositToChest(chestBlock) {
     const key = posKey(chestBlock.position);
-
-    if (isChestLocked(key, bot.username)) {
-      console.log(`[${bot.username}] Chest ${key} sedang dipakai bot lain, skip`);
-      return false;
-    }
+    if (isChestLocked(key, bot.username)) return false;
 
     lockChest(key, bot.username);
     let window = null;
 
     try {
-      // 1. Pergi ke chest
       await goToChest(chestBlock);
       await waitMs(200);
 
-      // 2. Verifikasi chest masih ada
       const fresh = bot.blockAt(chestBlock.position);
-      if (!fresh || fresh.name !== 'chest') {
-        console.log(`[${bot.username}] Chest ${key} sudah tidak ada`);
-        return false;
-      }
+      if (!fresh || fresh.name !== 'chest') return false;
 
-      // 3. Buka chest
       window = await openChestSafe(fresh);
       await waitMs(300);
 
-      // 4. Deposit semua item yang bisa di-deposit
       const depositables = getDepositableItems();
       const deposited = {};
       let depositCount = 0;
@@ -278,31 +297,25 @@ module.exports = function createStorageManager(bot, mcData) {
           deposited[item.name] = (deposited[item.name] || 0) + toDeposit;
           depositCount++;
           await waitMs(80);
-        } catch (depositErr) {
-          // Chest penuh → berhenti deposit ke chest ini
-          if (depositErr.message?.includes('full') || depositErr.message?.includes('penuh')) break;
+        } catch (e) {
+          if (e.message?.includes('full') || e.message?.includes('penuh')) break;
         }
       }
 
-      // 5. Update catatan isi chest
       const contents = {};
-      for (const i of window.items()) {
-        contents[i.name] = (contents[i.name] || 0) + i.count;
-      }
+      for (const i of window.items()) contents[i.name] = (contents[i.name] || 0) + i.count;
       updateChestContents(chestBlock.position, contents);
 
-      // 6. Tutup chest
       window.close();
       window = null;
 
       if (depositCount > 0) {
         const summary = Object.entries(deposited)
-          .map(([n, c]) => `${n}x${c}`)
+          .map(([n, c]) => `${n}×${c}`)
           .join(', ');
-        console.log(`[${bot.username}] 📦 Deposit berhasil: ${summary}`);
-        civ.addLog(`[${bot.username}] 📦 Deposit: ${summary}`);
+        console.log(`[${bot.username}] 📦 Deposit: ${summary}`);
+        civ.addLog(`[${bot.username}] 📦 ${summary}`);
 
-        // Update civ resources
         const resMap = {
           oak_log: 'wood',
           birch_log: 'wood',
@@ -318,8 +331,6 @@ module.exports = function createStorageManager(bot, mcData) {
         }
         return true;
       }
-
-      // Tidak ada yang di-deposit (semua sudah di-keep)
       return false;
     } catch (err) {
       console.log(`[${bot.username}] [deposit] ${err.message}`);
@@ -333,14 +344,10 @@ module.exports = function createStorageManager(bot, mcData) {
     }
   }
 
-  // ── WITHDRAW dari satu chest ─────────────────────────────────
+  // ── WITHDRAW ─────────────────────────────────────────────────
   async function withdrawFromChest(chestBlock, itemName, amount = 64) {
     const key = posKey(chestBlock.position);
-
-    if (isChestLocked(key, bot.username)) {
-      console.log(`[${bot.username}] Chest ${key} locked, skip withdraw`);
-      return false;
-    }
+    if (isChestLocked(key, bot.username)) return false;
 
     lockChest(key, bot.username);
     let window = null;
@@ -372,9 +379,8 @@ module.exports = function createStorageManager(bot, mcData) {
 
       window.close();
       window = null;
-
-      console.log(`[${bot.username}] 📤 Ambil ${toWithdraw}x ${itemName}`);
-      civ.addLog(`[${bot.username}] 📤 Ambil ${itemName}x${toWithdraw} dari chest`);
+      console.log(`[${bot.username}] 📤 Ambil ${toWithdraw}× ${itemName}`);
+      civ.addLog(`[${bot.username}] 📤 ${itemName}×${toWithdraw}`);
       return true;
     } catch (err) {
       console.log(`[${bot.username}] [withdraw] ${err.message}`);
@@ -393,25 +399,26 @@ module.exports = function createStorageManager(bot, mcData) {
     let chestItem = bot.inventory.items().find(i => i.name === 'chest');
 
     if (!chestItem) {
-      const planks = bot.inventory.items().find(i => i.name.includes('_planks') && i.count >= 8);
-      if (!planks) {
-        console.log(`[${bot.username}] Tidak ada planks untuk craft chest`);
-        return null;
-      }
-
-      const chestId = mcData.itemsByName['chest']?.id;
-      if (!chestId) return null;
-
-      try {
-        const recipes = await bot.recipesFor(chestId, null, 1, null);
-        if (recipes?.length) {
-          await bot.craft(recipes[0], 1, null);
-          await waitMs(400);
-          chestItem = bot.inventory.items().find(i => i.name === 'chest');
+      if (isCreative()) {
+        // Creative: /give chest langsung
+        await giveItem('chest', 4);
+        await waitMs(500);
+        chestItem = bot.inventory.items().find(i => i.name === 'chest');
+      } else {
+        const planks = bot.inventory.items().find(i => i.name.includes('_planks') && i.count >= 8);
+        if (!planks) return null;
+        const chestId = mcData.itemsByName['chest']?.id;
+        if (!chestId) return null;
+        try {
+          const recipes = await bot.recipesFor(chestId, null, 1, null);
+          if (recipes?.length) {
+            await bot.craft(recipes[0], 1, null);
+            await waitMs(400);
+            chestItem = bot.inventory.items().find(i => i.name === 'chest');
+          }
+        } catch (_) {
+          return null;
         }
-      } catch (err) {
-        console.log(`[${bot.username}] Gagal craft chest: ${err.message}`);
-        return null;
       }
     }
 
@@ -439,10 +446,8 @@ module.exports = function createStorageManager(bot, mcData) {
         try {
           await bot.placeBlock(below, new Vec3(0, 1, 0));
           await waitMs(500);
-          const chestBlockId = mcData.blocksByName['chest']?.id;
-          const placed = chestBlockId
-            ? bot.findBlock({ matching: chestBlockId, maxDistance: 5 })
-            : null;
+          const cid = mcData.blocksByName['chest']?.id;
+          const placed = cid ? bot.findBlock({ matching: cid, maxDistance: 5 }) : null;
           if (placed) {
             registerChest(placed.position);
             return placed;
@@ -457,44 +462,39 @@ module.exports = function createStorageManager(bot, mcData) {
 
   // ── PUBLIC: checkAndDeposit ──────────────────────────────────
   async function checkAndDeposit() {
+    // Creative bot tidak perlu deposit
+    if (isCreative()) return false;
     if (!isInventoryFull()) return false;
 
     console.log(`[${bot.username}] 🎒 Inventory penuh! Cari chest...`);
-
-    // Kumpulkan semua chest di sekitar
     const chests = findAllNearChests(48);
 
-    if (chests.length === 0) {
-      console.log(`[${bot.username}] Tidak ada chest, buat baru...`);
+    if (!chests.length) {
       const newChest = await placeNewChest();
-      if (!newChest) {
-        console.log(`[${bot.username}] Gagal buat chest!`);
-        return false;
-      }
-      return await depositToChest(newChest);
+      if (!newChest) return false;
+      return depositToChest(newChest);
     }
 
-    // Register semua chest yang ditemukan
     for (const c of chests) registerChest(c.position);
-
-    // Coba deposit ke chest satu per satu sampai berhasil
-    for (const chest of chests) {
-      const ok = await depositToChest(chest);
+    for (const c of chests) {
+      const ok = await depositToChest(c);
       if (ok) return true;
-      // Chest penuh atau gagal → coba chest berikutnya
       await waitMs(200);
     }
 
-    // Semua chest penuh → buat chest baru
-    console.log(`[${bot.username}] Semua chest penuh, buat chest baru...`);
     const newChest = await placeNewChest();
     if (!newChest) return false;
-    return await depositToChest(newChest);
+    return depositToChest(newChest);
   }
 
   // ── PUBLIC: fetchFromStorage ─────────────────────────────────
   async function fetchFromStorage(itemName, amount = 16) {
-    // Cek catatan state dulu (lebih cepat)
+    // Creative bot: /give langsung, tidak perlu chest
+    if (isCreative()) {
+      return await giveItem(itemName, amount);
+    }
+
+    // Survival: cari di chest
     const knownPos = findChestWithItem(itemName);
     if (knownPos) {
       const block = bot.blockAt(knownPos);
@@ -504,11 +504,10 @@ module.exports = function createStorageManager(bot, mcData) {
       }
     }
 
-    // Scan fisik semua chest
     const chests = findAllNearChests(48);
-    for (const chest of chests) {
-      registerChest(chest.position);
-      const ok = await withdrawFromChest(chest, itemName, amount);
+    for (const c of chests) {
+      registerChest(c.position);
+      const ok = await withdrawFromChest(c, itemName, amount);
       if (ok) return true;
     }
 
@@ -524,5 +523,6 @@ module.exports = function createStorageManager(bot, mcData) {
     registerChest,
     getAllChestPositions,
     findChestWithItem,
+    giveItem, // expose untuk skill yang butuh
   };
 };

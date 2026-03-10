@@ -1,7 +1,26 @@
+/**
+ * CIVILIZATION STATE MANAGER
+ *
+ * Perubahan:
+ * - Track primarySkill & mode (creative/survival) per bot
+ * - Dedicated bot status lebih informatif
+ * - addResources tetap kompatibel dengan semua skill
+ */
+
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
 
 const STATE_FILE = path.join(__dirname, '../logs/civilization.json');
+
+// Pastikan folder logs ada
+const logsDir = path.join(__dirname, '../logs');
+if (!fs.existsSync(logsDir)) {
+  try {
+    fs.mkdirSync(logsDir, { recursive: true });
+  } catch (_) {}
+}
 
 const DEFAULT_STATE = {
   phase: 'BOOTSTRAP',
@@ -23,16 +42,39 @@ const DEFAULT_STATE = {
   bots: {},
   tasks: [],
   log: [],
+  chests: {},
   updatedAt: null,
 };
+
+// ── State I/O ─────────────────────────────────────────────────
 
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
-      return { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) };
+      const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      // Deep merge default agar field baru selalu ada
+      return deepMerge(DEFAULT_STATE, raw);
     }
   } catch (_) {}
   return { ...DEFAULT_STATE };
+}
+
+function deepMerge(defaults, override) {
+  const result = { ...defaults };
+  for (const key of Object.keys(override)) {
+    if (
+      override[key] !== null &&
+      typeof override[key] === 'object' &&
+      !Array.isArray(override[key]) &&
+      typeof defaults[key] === 'object' &&
+      defaults[key] !== null
+    ) {
+      result[key] = deepMerge(defaults[key], override[key]);
+    } else {
+      result[key] = override[key];
+    }
+  }
+  return result;
 }
 
 function saveState(state) {
@@ -47,6 +89,7 @@ function saveState(state) {
 function getState() {
   return loadState();
 }
+
 function updateState(updater) {
   const s = loadState();
   updater(s);
@@ -54,27 +97,40 @@ function updateState(updater) {
   return s;
 }
 
+// ── Log ───────────────────────────────────────────────────────
+
 function addLog(message) {
   updateState(s => {
     s.log.unshift(`[${new Date().toLocaleTimeString('id-ID')}] ${message}`);
-    if (s.log.length > 50) s.log = s.log.slice(0, 50);
+    if (s.log.length > 80) s.log = s.log.slice(0, 80);
   });
 }
 
+// ── Bot Status ────────────────────────────────────────────────
+
 function updateBotStatus(username, info) {
   updateState(s => {
-    s.bots[username] = { ...(s.bots[username] || {}), ...info, lastSeen: new Date().toISOString() };
+    s.bots[username] = {
+      ...(s.bots[username] || {}),
+      ...info,
+      lastSeen: new Date().toISOString(),
+    };
   });
 }
+
+// ── Resources ─────────────────────────────────────────────────
 
 function addResources(items) {
   updateState(s => {
     for (const [key, val] of Object.entries(items)) {
-      if (s.resources[key] !== undefined)
+      if (s.resources[key] !== undefined) {
         s.resources[key] = Math.max(0, (s.resources[key] || 0) + val);
+      }
     }
   });
 }
+
+// ── Tasks ─────────────────────────────────────────────────────
 
 function addTask(task) {
   updateState(s => {
@@ -114,6 +170,33 @@ function completeTask(taskId) {
   });
 }
 
+// ── Snapshot helper (untuk dashboard/monitor) ─────────────────
+
+function getSnapshot() {
+  const s = getState();
+  const now = Date.now();
+  const onlineBots = Object.entries(s.bots)
+    .filter(([, i]) => i.lastSeen && now - new Date(i.lastSeen).getTime() < 15000)
+    .map(([name, i]) => ({
+      name,
+      skill: i.skill,
+      mode: i.mode || 'survival',
+      primarySkill: i.primarySkill,
+      status: i.status,
+      pos: i.pos,
+    }));
+
+  return {
+    phase: s.phase,
+    resources: s.resources,
+    structures: s.structures,
+    threats: s.threats,
+    onlineBots,
+    pendingTasks: s.tasks.filter(t => t.status === 'PENDING').length,
+    logTail: s.log.slice(0, 10),
+  };
+}
+
 module.exports = {
   getState,
   updateState,
@@ -123,4 +206,5 @@ module.exports = {
   addTask,
   claimTask,
   completeTask,
+  getSnapshot,
 };
