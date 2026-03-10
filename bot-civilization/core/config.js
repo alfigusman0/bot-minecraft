@@ -7,7 +7,7 @@ const { Vec3 } = require('vec3');
 
 // ── TITIK PUSAT PERADABAN ────────────────────────────────────
 // Semua bot spawn, respawn, dan tidur di sekitar titik ini
-const HOME_BASE = new Vec3(-3976, 94, 4967);
+const HOME_BASE = new Vec3(-7572, 64, 11263);
 
 // Radius aman untuk kembali ke base sebelum malam (blok)
 // Bot akan pulang jika jarak > ini saat waktu mendekati malam
