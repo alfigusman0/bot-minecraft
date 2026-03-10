@@ -3,7 +3,8 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
 const civ = require('./core/civilization');
 const engine = require('./core/decisionEngine');
-const { waitMs } = require('./shared/utils');
+const { waitMs, withUnstuck } = require('./shared/utils');
+const { HOME_BASE } = require('./core/config');
 
 const farmingSkill = require('./skills/farming');
 const miningSkill = require('./skills/mining');
@@ -68,7 +69,23 @@ function createBot() {
     console.log(`[${USERNAME}] ✅ Spawned | v${bot.version} | Skill: ${PRIMARY_SKILL}`);
 
     // Tunda 3 detik agar bot lain sempat register dulu sebelum decide
-    setTimeout(() => {
+    setTimeout(async () => {
+      // Pergi ke HOME_BASE dulu jika spawn jauh
+      const distToHome = bot.entity.position.distanceTo(HOME_BASE);
+      if (distToHome > 20) {
+        console.log(`[${USERNAME}] 🏠 Menuju home base (${distToHome.toFixed(0)} blok)...`);
+        civ.updateBotStatus(USERNAME, { status: 'going_home' });
+        try {
+          await withUnstuck(
+            bot,
+            () => bot.pathfinder.goto(new goals.GoalNear(HOME_BASE.x, HOME_BASE.y, HOME_BASE.z, 5)),
+            30000
+          );
+          console.log(`[${USERNAME}] 🏠 Tiba di home base!`);
+        } catch (_) {
+          console.log(`[${USERNAME}] Gagal ke home base, lanjut dari posisi sekarang`);
+        }
+      }
       startSkill(PRIMARY_SKILL);
       makeDecision();
     }, 3000);
@@ -174,7 +191,7 @@ function createBot() {
     switch (cmd) {
       case '!help':
         bot.chat(
-          '!civ !bots !jobs !do <skill> !stop !resume !status !come !follow !unfollow !inv !build set !say <msg>'
+          '!civ !bots !jobs !do <skill> !stop !resume !home !status !come !follow !unfollow !inv !build set !say <msg>'
         );
         break;
 
@@ -272,6 +289,21 @@ function createBot() {
         break;
       }
 
+      case '!home': {
+        // Paksa kembali ke HOME_BASE
+        bot.chat(`🏠 Kembali ke base (${HOME_BASE.x},${HOME_BASE.y},${HOME_BASE.z})...`);
+        stopAll();
+        bot.pathfinder
+          .goto(new goals.GoalNear(HOME_BASE.x, HOME_BASE.y, HOME_BASE.z, 3))
+          .then(() => {
+            bot.chat('🏠 Sudah di base!');
+            if (!decideTimer) decideTimer = setInterval(() => makeDecision(), 10000);
+            makeDecision(true);
+          })
+          .catch(() => bot.chat('Tidak bisa ke base!'));
+        break;
+      }
+
       case '!follow': {
         const target = args[1] || username;
         if (bot._followInterval) clearInterval(bot._followInterval);
@@ -338,9 +370,23 @@ function createBot() {
   });
 
   bot.on('respawn', async () => {
-    console.log(`[${USERNAME}] 🔄 Respawn`);
+    console.log(`[${USERNAME}] 🔄 Respawn — kembali ke home base...`);
     civ.updateBotStatus(USERNAME, { status: 'respawned' });
     await waitMs(2000);
+
+    // Selalu kembali ke HOME_BASE setelah mati
+    try {
+      await withUnstuck(
+        bot,
+        () => bot.pathfinder.goto(new goals.GoalNear(HOME_BASE.x, HOME_BASE.y, HOME_BASE.z, 5)),
+        30000
+      );
+      console.log(`[${USERNAME}] 🏠 Kembali ke home base setelah mati`);
+      civ.addLog(`[${USERNAME}] 🏠 Kembali ke base setelah mati`);
+    } catch (_) {
+      console.log(`[${USERNAME}] Tidak bisa ke home base setelah respawn`);
+    }
+
     startSkill(PRIMARY_SKILL);
     if (!decideTimer) decideTimer = setInterval(() => makeDecision(), 10000);
     if (!idleTimer)
