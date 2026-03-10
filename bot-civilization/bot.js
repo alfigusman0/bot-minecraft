@@ -67,12 +67,31 @@ function createBot() {
     civ.addLog(`[${USERNAME}] ✅ Online | Skill utama: ${PRIMARY_SKILL}`);
     console.log(`[${USERNAME}] ✅ Spawned | v${bot.version} | Skill: ${PRIMARY_SKILL}`);
 
-    startSkill(PRIMARY_SKILL);
+    // Tunda 3 detik agar bot lain sempat register dulu sebelum decide
+    setTimeout(() => {
+      startSkill(PRIMARY_SKILL);
+      makeDecision();
+    }, 3000);
 
     // Decision loop setiap 10 detik
     decideTimer = setInterval(() => makeDecision(), 10000);
 
-    // FIX BUG 1: Idle/stuck detector setiap 20 detik
+    // HEARTBEAT: update lastSeen + skill setiap 5 detik agar bot lain tahu kita aktif
+    setInterval(() => {
+      civ.updateBotStatus(USERNAME, {
+        skill: currentSkill,
+        status: 'working',
+        pos: bot.entity
+          ? {
+              x: Math.floor(bot.entity.position.x),
+              y: Math.floor(bot.entity.position.y),
+              z: Math.floor(bot.entity.position.z),
+            }
+          : null,
+      });
+    }, 5000);
+
+    // Idle/stuck detector setiap 20 detik
     idleTimer = setInterval(() => {
       if (!bot.entity) return;
       const curPos = bot.entity.position;
@@ -92,6 +111,9 @@ function createBot() {
 
     // Generate tasks peradaban setiap 30 detik
     setInterval(() => engine.generateTasks(), 30000);
+
+    // Log distribusi skill setiap 60 detik
+    setInterval(() => engine.logDistribution(), 60000);
   });
 
   // ──────────────────────────────────────────
@@ -100,7 +122,7 @@ function createBot() {
   function makeDecision(forceSwitch = false) {
     if (!bot.entity) return;
 
-    const newSkill = engine.decideSkill(bot, skills, currentSkill);
+    const newSkill = engine.decideSkill(bot, skills, currentSkill, PRIMARY_SKILL);
 
     if (!newSkill) {
       if (!currentSkill || !skills[currentSkill]?.isViable(bot)) {
@@ -152,7 +174,7 @@ function createBot() {
     switch (cmd) {
       case '!help':
         bot.chat(
-          '!civ !bots !do <skill> !stop !resume !status !come !follow !unfollow !inv !build set !say <msg>'
+          '!civ !bots !jobs !do <skill> !stop !resume !status !come !follow !unfollow !inv !build set !say <msg>'
         );
         break;
 
@@ -177,6 +199,26 @@ function createBot() {
             : '?';
           bot.chat(`${name}: ${info.skill || 'idle'} | ${info.status} | ${ago} lalu`);
         }
+        break;
+      }
+
+      case '!jobs': {
+        // Tampilkan distribusi skill real-time
+        const dist = engine.logDistribution();
+        const lines = Object.entries(dist).map(
+          ([sk, bots]) => `${sk}:${bots.join('+')} (${bots.length})`
+        );
+        if (!lines.length) {
+          bot.chat('Semua bot idle');
+          break;
+        }
+        bot.chat('📊 ' + lines.join(' | '));
+        // Tampilkan juga bot yang tidak aktif
+        const s2 = civ.getState();
+        const allBot = Object.entries(s2.bots);
+        const now = Date.now();
+        const offline = allBot.filter(([, i]) => !i.lastSeen || now - new Date(i.lastSeen) > 15000);
+        if (offline.length) bot.chat('❌ Offline: ' + offline.map(([n]) => n).join(', '));
         break;
       }
 
