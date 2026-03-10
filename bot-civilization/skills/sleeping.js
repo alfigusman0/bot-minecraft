@@ -1,3 +1,20 @@
+/**
+ * SLEEPING SKILL — fix "the bed is occupied" loop
+ *
+ * Root cause sebelumnya:
+ * - Klaim bed via civilization.json (file) → terlalu lambat, 5 bot baca/tulis
+ *   hampir bersamaan, klaim belum ter-flush sebelum bot lain baca
+ * - Semua bot retry ke bed yang SAMA karena findFreeBed() tetap return bed itu
+ *
+ * Fix:
+ * 1. Cek entity sleeping di bed secara LANGSUNG dari world state (bukan file)
+ * 2. Setiap bot punya DELAY berbeda sebelum tidur berdasarkan nama bot
+ *    → tidak semua cari bed di detik yang persis sama
+ * 3. Setelah berhasil tidur, set flag lokal isSleeping = true → tidak retry lagi
+ * 4. findFreeBed() exclude bed yang ada sleeping entity di atasnya
+ * 5. Jika semua bed penuh → buat bed baru lalu tidur di situ
+ */
+
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
 const { waitMs, equipBest, withUnstuck, hasItem } = require('../shared/utils');
@@ -42,7 +59,15 @@ const WOOL_COLORS = [
   'black',
 ];
 
-// ── Helper: key unik untuk posisi bed ───────────────────────
+// Stagger delay per bot agar tidak cari bed bersamaan (ms)
+const BOT_SLEEP_DELAY = {
+  SiPetani: 0,
+  SiPenebang: 1500,
+  SiPenambang: 3000,
+  SiPenjaga: 4500,
+  SiBuilder: 6000,
+};
+
 function posKey(pos) {
   return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }
@@ -53,11 +78,14 @@ module.exports = function sleepingSkill(bot, mcData) {
   let checkTimer = null;
   let returningHome = false;
   let storage = null;
+  let myBedKey = null; // posKey bed yang sedang saya pakai
 
   function getStorage() {
     if (!storage) storage = createStorage(bot, mcData);
     return storage;
   }
+
+  const staggerDelay = BOT_SLEEP_DELAY[bot.username] ?? 0;
 
   function timeOfDay() {
     return bot.time?.timeOfDay ?? 0;
@@ -80,86 +108,92 @@ module.exports = function sleepingSkill(bot, mcData) {
     return isApproachingNight() && !isSleeping;
   }
 
-  // ── Baca semua bed yang sudah diklaim dari civ state ─────────
-  function getClaimedBeds(excludeSelf = true) {
+  // ── Cek apakah bed sedang ditiduri entity (REALTIME dari world) ─
+  function isBedOccupiedByEntity(bedPos) {
+    // Cek semua sleeping players / entities di sekitar bed
+    for (const entity of Object.values(bot.entities)) {
+      if (!entity || entity === bot.entity) continue;
+      if (!entity.position) continue;
+      // Player yang sedang tidur biasanya posisinya tepat di atas bed
+      const dx = Math.abs(entity.position.x - bedPos.x);
+      const dy = Math.abs(entity.position.y - (bedPos.y + 0.5));
+      const dz = Math.abs(entity.position.z - bedPos.z);
+      if (dx < 1 && dy < 1 && dz < 1) return true;
+    }
+    return false;
+  }
+
+  // ── Cek apakah bed ini diklaim bot lain via civ state ──────────
+  function isBedClaimedByOther(key) {
+    if (key === myBedKey) return false; // klaim sendiri
     const state = civ.getState();
-    return Object.entries(state.bots)
-      .filter(([name, info]) => {
-        if (excludeSelf && name === bot.username) return false;
-        return !!info.bedPos;
-      })
-      .map(([, info]) => info.bedPos); // array of "x,y,z" strings
+    return Object.entries(state.bots).some(([name, info]) => {
+      if (name === bot.username) return false;
+      return info.bedPos === key;
+    });
   }
 
-  // ── Klaim bed di civ state (SEBELUM pathfinding) ─────────────
-  function claimBed(bedBlock) {
-    const key = posKey(bedBlock.position);
-    civ.updateBotStatus(bot.username, { bedPos: key, status: 'going_to_sleep' });
-    console.log(`[${bot.username}] 🛏️ Klaim bed di ${key}`);
-  }
-
-  function releaseBed() {
-    civ.updateBotStatus(bot.username, { bedPos: null });
-    console.log(`[${bot.username}] 🛏️ Release bed`);
-  }
-
-  // ── Cari bed yang BELUM diklaim siapapun ─────────────────────
+  // ── Cari bed yang benar-benar bebas ──────────────────────────
   function findFreeBed(searchRadius = 48) {
     const ids = BED_TYPES.map(b => mcData.blocksByName[b]?.id).filter(Boolean);
     if (!ids.length) return null;
 
-    const claimed = getClaimedBeds(true); // semua klaim selain diri sendiri
+    const candidates = [];
+    const seen = new Set();
 
-    // Cari semua bed dalam radius, filter yang belum diklaim
-    let best = null;
-    let bestDist = Infinity;
-
-    // bot.findBlock hanya return 1, jadi kita cari berulang dengan exclude
-    // Cara: cari bed terdekat yang tidak ada di claimed list
-    const checked = new Set();
-
-    for (let attempt = 0; attempt < 20; attempt++) {
+    // Kumpulkan semua bed dalam radius
+    for (let i = 0; i < 30; i++) {
       const found = bot.findBlock({
         matching: ids,
         maxDistance: searchRadius,
-        useExtraInfo: b => {
-          const key = posKey(b.position);
-          if (checked.has(key)) return false;
-          if (claimed.includes(key)) return false;
-          return true;
-        },
+        useExtraInfo: b => !seen.has(posKey(b.position)),
       });
-
       if (!found) break;
-
       const key = posKey(found.position);
-      checked.add(key);
-
-      const dist = found.position.distanceTo(HOME_BASE);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = found;
-      }
-
-      // Sudah cukup dekat dengan base, tidak perlu cari lebih jauh
-      if (dist < 10) break;
+      seen.add(key);
+      candidates.push(found);
     }
 
-    return best;
+    if (!candidates.length) return null;
+
+    // Filter: buang bed yang occupied entity ATAU diklaim bot lain
+    const free = candidates.filter(b => {
+      const key = posKey(b.position);
+      if (isBedOccupiedByEntity(b.position)) return false;
+      if (isBedClaimedByOther(key)) return false;
+      return true;
+    });
+
+    if (!free.length) return null;
+
+    // Pilih yang paling dekat HOME_BASE
+    free.sort((a, b) => a.position.distanceTo(HOME_BASE) - b.position.distanceTo(HOME_BASE));
+    return free[0];
   }
 
-  // ── Kembali ke home base ──────────────────────────────────────
+  // ── Klaim & release bed ───────────────────────────────────────
+  function claimBed(bedBlock) {
+    myBedKey = posKey(bedBlock.position);
+    civ.updateBotStatus(bot.username, { bedPos: myBedKey, status: 'going_to_sleep' });
+    console.log(`[${bot.username}] 🛏️ Klaim bed di ${myBedKey}`);
+  }
+
+  function releaseBed() {
+    myBedKey = null;
+    civ.updateBotStatus(bot.username, { bedPos: null });
+  }
+
+  // ── Pulang ke home base ───────────────────────────────────────
   async function returnHome() {
     if (isNearHome() || returningHome) return;
     const dist = distToHome();
     if (dist > HOME_RETURN_RADIUS) {
-      console.log(`[${bot.username}] 🌙 Terlalu jauh (${dist.toFixed(0)} blok), skip pulang`);
+      console.log(`[${bot.username}] 🌙 Terlalu jauh (${dist.toFixed(0)} blok) untuk pulang`);
       return;
     }
     returningHome = true;
-    console.log(`[${bot.username}] 🏠 Pulang ke base (${dist.toFixed(0)} blok)...`);
+    console.log(`[${bot.username}] 🏠 Pulang ke base...`);
     civ.addLog(`[${bot.username}] 🏠 Pulang sebelum malam`);
-    civ.updateBotStatus(bot.username, { status: 'returning_home' });
     try {
       await withUnstuck(
         bot,
@@ -224,17 +258,15 @@ module.exports = function sleepingSkill(bot, mcData) {
   }
 
   async function craftBed() {
-    // Sudah punya bed?
     if (bot.inventory.items().find(i => BED_TYPES.includes(i.name))) return true;
-    // Cek storage
     for (const color of WOOL_COLORS) {
       if (await getStorage().fetchFromStorage(`${color}_bed`, 1)) return true;
     }
 
-    // Kumpulkan wool
     let wool = WOOL_COLORS.map(c => `${c}_wool`)
       .map(w => bot.inventory.items().find(i => i.name === w && i.count >= 3))
       .find(Boolean);
+
     if (!wool) {
       for (const c of WOOL_COLORS) {
         if (await getStorage().fetchFromStorage(`${c}_wool`, 3)) break;
@@ -260,7 +292,7 @@ module.exports = function sleepingSkill(bot, mcData) {
       if (t) {
         await bot.equip(t, 'hand');
         const below = bot.blockAt(bot.entity.position.floored().offset(1, -1, 0));
-        if (below && below.name !== 'air') {
+        if (below?.name !== 'air') {
           await bot.placeBlock(below, new Vec3(0, 1, 0));
           await waitMs(500);
           table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 8 }) : null;
@@ -276,7 +308,6 @@ module.exports = function sleepingSkill(bot, mcData) {
     const bedName = wool.name.replace('_wool', '_bed');
     const bedId = mcData.itemsByName[bedName]?.id;
     if (!bedId) return false;
-
     try {
       const recipes = await bot.recipesFor(bedId, null, 1, table);
       if (!recipes?.length) return false;
@@ -303,12 +334,11 @@ module.exports = function sleepingSkill(bot, mcData) {
     await bot.equip(bedItem, 'hand');
 
     const bedZone = LAYOUT.bedZone;
-    const attempts = [];
-    for (let x = -4; x <= 4; x++)
-      for (let z = -4; z <= 4; z++) attempts.push(bedZone.offset(x, 0, z));
-    attempts.sort((a, b) => a.distanceTo(bedZone) - b.distanceTo(bedZone));
+    const spots = [];
+    for (let x = -5; x <= 5; x++) for (let z = -5; z <= 5; z++) spots.push(bedZone.offset(x, 0, z));
+    spots.sort((a, b) => a.distanceTo(bedZone) - b.distanceTo(bedZone));
 
-    for (const target of attempts) {
+    for (const target of spots) {
       const at = bot.blockAt(target);
       const below = bot.blockAt(target.offset(0, -1, 0));
       const above = bot.blockAt(target.offset(0, 1, 0));
@@ -327,7 +357,7 @@ module.exports = function sleepingSkill(bot, mcData) {
           await waitMs(600);
           const placed = findFreeBed(8);
           if (placed) {
-            civ.addLog(`[${bot.username}] 🛏️ Pasang bed di base`);
+            civ.addLog(`[${bot.username}] 🛏️ Pasang bed baru di base`);
             return placed;
           }
         } catch (_) {
@@ -338,69 +368,110 @@ module.exports = function sleepingSkill(bot, mcData) {
     return null;
   }
 
-  // ── TIDUR — FIX UTAMA ────────────────────────────────────────
-  // 1. Klaim bed di civ state DULU sebelum pathfinding
-  // 2. Jika "occupied" → release klaim, cari bed lain, retry
-  // 3. Maksimal 5 kali retry dengan bed berbeda
-  async function trySleep(maxRetries = 5) {
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const bed = findFreeBed();
-      if (!bed) {
-        console.log(`[${bot.username}] Tidak ada bed bebas (attempt ${attempt + 1})`);
-        await waitMs(2000);
-        continue;
+  // ── TIDUR dengan logika baru ───────────────────────────────
+  async function trySleep() {
+    // Stagger: tiap bot nunggu waktu berbeda agar tidak semua cari bed di detik sama
+    if (staggerDelay > 0) {
+      console.log(`[${bot.username}] ⏳ Stagger ${staggerDelay}ms sebelum cari bed...`);
+      await waitMs(staggerDelay);
+    }
+
+    // Cari bed bebas (cek entity + civ state)
+    let bed = findFreeBed();
+
+    if (!bed) {
+      console.log(`[${bot.username}] Semua bed penuh/occupied → craft & pasang baru`);
+      // Semua bed sudah terisi → buat bed baru khusus bot ini
+      const crafted = await craftBed();
+      if (!crafted) {
+        console.log(`[${bot.username}] Tidak bisa craft bed, skip tidur malam ini`);
+        return false;
       }
+      bed = await placeBedNearHome();
+      if (!bed) {
+        console.log(`[${bot.username}] Tidak bisa pasang bed`);
+        return false;
+      }
+    }
 
-      // ① KLAIM lebih dulu — bot lain tidak akan pilih bed ini
-      claimBed(bed);
-      await waitMs(200); // beri waktu civ state ter-write
+    // Klaim bed ini di civ state
+    claimBed(bed);
+    await waitMs(300); // beri waktu tulis ke disk
 
+    // Pergi ke bed
+    try {
+      await withUnstuck(
+        bot,
+        () =>
+          bot.pathfinder.goto(
+            new goals.GoalNear(bed.position.x, bed.position.y, bed.position.z, 2)
+          ),
+        15000
+      );
+    } catch (err) {
+      console.log(`[${bot.username}] Gagal pergi ke bed: ${err.message}`);
+      releaseBed();
+      return false;
+    }
+
+    // Verifikasi bed masih ada & bebas
+    const freshBed = bot.blockAt(bed.position);
+    if (!freshBed || !BED_TYPES.includes(freshBed.name)) {
+      console.log(`[${bot.username}] Bed hilang setelah pathfind`);
+      releaseBed();
+      return false;
+    }
+
+    // Cek sekali lagi apakah ada entity di bed ini
+    if (isBedOccupiedByEntity(bed.position)) {
+      console.log(`[${bot.username}] Bed ${posKey(bed.position)} ada entitas, cari lain...`);
+      releaseBed();
+      // Cari bed lain langsung (rekursif 1x saja)
+      const alt = findFreeBed();
+      if (!alt) return false;
+      claimBed(alt);
+      await waitMs(200);
       try {
-        // ② Pergi ke bed
         await withUnstuck(
           bot,
           () =>
             bot.pathfinder.goto(
-              new goals.GoalNear(bed.position.x, bed.position.y, bed.position.z, 2)
+              new goals.GoalNear(alt.position.x, alt.position.y, alt.position.z, 2)
             ),
           12000
         );
-
-        // ③ Verifikasi bed masih ada & masih free
-        const freshBed = bot.blockAt(bed.position);
-        if (!freshBed || !BED_TYPES.includes(freshBed.name)) {
-          console.log(`[${bot.username}] Bed sudah hilang, cari lain...`);
+        const altFresh = bot.blockAt(alt.position);
+        if (!altFresh || !BED_TYPES.includes(altFresh.name)) {
           releaseBed();
-          continue;
+          return false;
         }
-
-        // ④ Coba tidur
         isSleeping = true;
-        console.log(`[${bot.username}] 😴 Tidur di ${posKey(bed.position)}`);
+        console.log(`[${bot.username}] 😴 Tidur di ${posKey(alt.position)}`);
         civ.addLog(`[${bot.username}] 😴 Tidur`);
-        civ.updateBotStatus(bot.username, { bedPos: posKey(bed.position), status: 'sleeping' });
-
-        await bot.sleep(freshBed);
-        return true; // Berhasil!
+        await bot.sleep(altFresh);
+        return true;
       } catch (err) {
         isSleeping = false;
         releaseBed();
-
-        const msg = err.message?.toLowerCase() || '';
-        if (msg.includes('occupied') || msg.includes('too far') || msg.includes('obstructed')) {
-          console.log(
-            `[${bot.username}] Bed error (${err.message}), coba bed lain... (${attempt + 1}/${maxRetries})`
-          );
-          await waitMs(1000);
-          continue; // Coba bed lain
-        }
-
-        // Error lain (bukan occupied) → stop
-        console.log(`[${bot.username}] [sleeping] error: ${err.message}`);
-        break;
+        console.log(`[${bot.username}] Gagal tidur alt bed: ${err.message}`);
+        return false;
       }
     }
-    return false;
+
+    // Tidur!
+    try {
+      isSleeping = true;
+      console.log(`[${bot.username}] 😴 Tidur di ${posKey(bed.position)}`);
+      civ.addLog(`[${bot.username}] 😴 Tidur`);
+      civ.updateBotStatus(bot.username, { bedPos: myBedKey, status: 'sleeping' });
+      await bot.sleep(freshBed);
+      return true;
+    } catch (err) {
+      isSleeping = false;
+      releaseBed();
+      console.log(`[${bot.username}] Gagal tidur: ${err.message}`);
+      return false;
+    }
   }
 
   // ── Main loop ─────────────────────────────────────────────────
@@ -421,7 +492,6 @@ module.exports = function sleepingSkill(bot, mcData) {
     active = true;
 
     try {
-      // Pastikan di base
       if (!isNearHome()) {
         await returnHome();
         if (!isNearHome()) {
@@ -430,26 +500,7 @@ module.exports = function sleepingSkill(bot, mcData) {
         }
       }
 
-      // Cari bed bebas
-      let bed = findFreeBed();
-
-      if (!bed) {
-        // Tidak ada bed → craft & pasang
-        if (!bot.inventory.items().find(i => BED_TYPES.includes(i.name))) {
-          if (!(await craftBed())) {
-            active = false;
-            return;
-          }
-        }
-        bed = await placeBedNearHome();
-        if (!bed) {
-          active = false;
-          return;
-        }
-      }
-
-      // Tidur dengan retry logic
-      await trySleep(5);
+      await trySleep();
     } catch (err) {
       console.log(`[${bot.username}] [sleeping] ${err.message}`);
       isSleeping = false;
@@ -462,7 +513,7 @@ module.exports = function sleepingSkill(bot, mcData) {
   function onWake() {
     isSleeping = false;
     releaseBed();
-    console.log(`[${bot.username}] ☀️ Bangun, siap kerja!`);
+    console.log(`[${bot.username}] ☀️ Bangun!`);
     civ.updateBotStatus(bot.username, { status: 'working' });
     civ.addLog(`[${bot.username}] ☀️ Bangun`);
   }
