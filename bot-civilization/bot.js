@@ -45,7 +45,7 @@ const CONFIG = {
   port: parseInt(process.env.MC_PORT || '25565'),
   username: USERNAME,
   auth: 'offline',
-  version: '1.21.1',
+  version: '1.21.11',
 };
 
 // ─────────────────────────────────────────────
