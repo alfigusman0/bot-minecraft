@@ -1,14 +1,21 @@
 const { goals } = require('mineflayer-pathfinder');
 const { waitMs, equipBest, withUnstuck } = require('../shared/utils');
 const civ = require('../core/civilization');
+const createStorage = require('../core/storage');
 
 const PREY = ['cow', 'chicken', 'pig', 'sheep', 'rabbit'];
 const SWORDS = ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'];
-const MIN_POP = 2; // Sisakan minimal 2 hewan agar tidak punah
+const MIN_POP = 2;
 
 module.exports = function huntingSkill(bot, mcData) {
   let active = false;
   let interval = null;
+  let storage = null;
+
+  function getStorage() {
+    if (!storage) storage = createStorage(bot, mcData);
+    return storage;
+  }
 
   function countNearby(name) {
     return Object.values(bot.entities).filter(
@@ -20,33 +27,31 @@ module.exports = function huntingSkill(bot, mcData) {
     return Object.values(bot.entities).find(e => {
       if (!e?.name) return false;
       const name = e.name.toLowerCase();
-      if (!PREY.includes(name)) return false;
-      if (countNearby(name) <= MIN_POP) return false;
-      return bot.entity.position.distanceTo(e.position) < 32;
+      return (
+        PREY.includes(name) &&
+        countNearby(name) > MIN_POP &&
+        bot.entity.position.distanceTo(e.position) < 32
+      );
     });
   }
 
   function isViable() {
-    const state = civ.getState();
-    if (state.resources.food >= 32) return false;
-    return !!findPrey();
+    return civ.getState().resources.food < 32 && !!findPrey();
   }
 
   async function run() {
     if (active) return;
     active = true;
     try {
+      await getStorage().checkAndDeposit();
+
       const prey = findPrey();
       if (!prey) {
         active = false;
         return;
       }
 
-      console.log(`[${bot.username}] 🏹 Memburu: ${prey.name}`);
-
-      // FIX BUG 2: Equip sword terbaik
       await equipBest(bot, SWORDS, 'hand');
-
       await withUnstuck(bot, () =>
         bot.pathfinder.goto(
           new goals.GoalNear(prey.position.x, prey.position.y, prey.position.z, 2)
@@ -59,10 +64,10 @@ module.exports = function huntingSkill(bot, mcData) {
         await waitMs(700);
         attempts++;
       }
-
       await waitMs(1000);
+
       civ.addResources({ food: 3 });
-      civ.addLog(`[${bot.username}] 🥩 Berburu ${prey.name} berhasil`);
+      civ.addLog(`[${bot.username}] 🥩 Berburu ${prey.name}`);
     } catch (err) {
       console.log(`[${bot.username}] [hunting] ${err.message}`);
     }

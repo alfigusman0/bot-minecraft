@@ -1,6 +1,7 @@
 const { goals } = require('mineflayer-pathfinder');
 const { waitMs, equipBest, withUnstuck } = require('../shared/utils');
 const civ = require('../core/civilization');
+const createStorage = require('../core/storage');
 
 const WOOD_TYPES = [
   'oak_log',
@@ -12,8 +13,6 @@ const WOOD_TYPES = [
   'mangrove_log',
   'cherry_log',
 ];
-
-// Blok yang menandakan area bangunan — jangan tebang pohon di dekat ini
 const STRUCTURE_BLOCKS = [
   'oak_door',
   'birch_door',
@@ -32,15 +31,19 @@ const STRUCTURE_BLOCKS = [
   'stone_bricks',
   'mossy_cobblestone',
 ];
-
 const AXES = ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe'];
 
 module.exports = function loggingSkill(bot, mcData) {
   let active = false;
   let interval = null;
+  let storage = null;
+
+  function getStorage() {
+    if (!storage) storage = createStorage(bot, mcData);
+    return storage;
+  }
 
   function isNearStructure(pos) {
-    // Cek villager dalam radius 8
     const nearVillager = Object.values(bot.entities).some(e => {
       if (!e?.name) return false;
       return (
@@ -49,21 +52,21 @@ module.exports = function loggingSkill(bot, mcData) {
       );
     });
     if (nearVillager) return true;
-
-    // Cek blok bangunan dalam radius 5
-    const structIds = STRUCTURE_BLOCKS.map(b => mcData.blocksByName[b]?.id).filter(Boolean);
-    if (!structIds.length) return false;
-    return !!bot.findBlock({
-      matching: structIds,
-      maxDistance: 5,
-      useExtraInfo: b => b.position.distanceTo(pos) <= 5,
-    });
+    const ids = STRUCTURE_BLOCKS.map(b => mcData.blocksByName[b]?.id).filter(Boolean);
+    return (
+      ids.length > 0 &&
+      !!bot.findBlock({
+        matching: ids,
+        maxDistance: 5,
+        useExtraInfo: b => b.position.distanceTo(pos) <= 5,
+      })
+    );
   }
 
   function isViable() {
-    const logIds = WOOD_TYPES.map(w => mcData.blocksByName[w]?.id).filter(Boolean);
+    const ids = WOOD_TYPES.map(w => mcData.blocksByName[w]?.id).filter(Boolean);
     return !!bot.findBlock({
-      matching: logIds,
+      matching: ids,
       maxDistance: 32,
       useExtraInfo: b => !isNearStructure(b.position),
     });
@@ -73,38 +76,39 @@ module.exports = function loggingSkill(bot, mcData) {
     if (active) return;
     active = true;
     try {
-      const logIds = WOOD_TYPES.map(w => mcData.blocksByName[w]?.id).filter(Boolean);
-      const logBlock = bot.findBlock({
-        matching: logIds,
+      await getStorage().checkAndDeposit();
+
+      const ids = WOOD_TYPES.map(w => mcData.blocksByName[w]?.id).filter(Boolean);
+      const target = bot.findBlock({
+        matching: ids,
         maxDistance: 32,
         useExtraInfo: b => !isNearStructure(b.position),
       });
-
-      if (!logBlock) {
+      if (!target) {
         active = false;
         return;
       }
 
-      // FIX BUG 2: Equip axe terbaik
       await equipBest(bot, AXES, 'hand');
-
-      const pos = logBlock.position;
-      if (isNearStructure(pos)) {
+      if (isNearStructure(target.position)) {
         active = false;
         return;
       }
 
-      await withUnstuck(bot, () => bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 2)));
+      await withUnstuck(bot, () =>
+        bot.pathfinder.goto(
+          new goals.GoalNear(target.position.x, target.position.y, target.position.z, 2)
+        )
+      );
 
-      let currentPos = pos.clone();
-      let count = 0;
+      let cur = target.position.clone(),
+        count = 0;
       while (count < 15) {
-        const current = bot.blockAt(currentPos);
-        if (!current || !WOOD_TYPES.includes(current.name)) break;
-        if (isNearStructure(currentPos)) break;
-        await bot.dig(current);
+        const b = bot.blockAt(cur);
+        if (!b || !WOOD_TYPES.includes(b.name) || isNearStructure(cur)) break;
+        await bot.dig(b);
         await waitMs(300);
-        currentPos = currentPos.offset(0, 1, 0);
+        cur = cur.offset(0, 1, 0);
         count++;
       }
 

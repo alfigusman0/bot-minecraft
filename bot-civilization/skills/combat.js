@@ -1,8 +1,9 @@
 const { goals } = require('mineflayer-pathfinder');
 const { waitMs, equipBest, withUnstuck } = require('../shared/utils');
 const civ = require('../core/civilization');
+const createStorage = require('../core/storage');
 
-const HOSTILE_MOBS = [
+const HOSTILE = [
   'zombie',
   'skeleton',
   'spider',
@@ -16,7 +17,6 @@ const HOSTILE_MOBS = [
   'phantom',
   'cave_spider',
 ];
-
 const SWORDS = ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'];
 const ARMORS = {
   head: [
@@ -66,45 +66,60 @@ const FOODS = [
 module.exports = function combatSkill(bot, mcData) {
   let active = false;
   let interval = null;
+  let storage = null;
 
-  function getNearestHostile() {
+  function getStorage() {
+    if (!storage) storage = createStorage(bot, mcData);
+    return storage;
+  }
+
+  function getHostile() {
     return Object.values(bot.entities).find(e => {
       if (!e?.name || e.type !== 'mob') return false;
       return (
-        HOSTILE_MOBS.includes(e.name.toLowerCase()) &&
-        bot.entity.position.distanceTo(e.position) < 24
+        HOSTILE.includes(e.name.toLowerCase()) && bot.entity.position.distanceTo(e.position) < 24
       );
     });
   }
 
   function isViable() {
-    return !!getNearestHostile();
+    return !!getHostile();
   }
 
-  async function equipArmor() {
-    // FIX BUG 2: Auto-equip armor terbaik
-    await equipBest(bot, ARMORS.head, 'head');
-    await equipBest(bot, ARMORS.torso, 'torso');
-    await equipBest(bot, ARMORS.legs, 'legs');
-    await equipBest(bot, ARMORS.feet, 'feet');
+  async function ensureWeapon() {
+    const has = SWORDS.some(s => bot.inventory.items().find(i => i.name === s));
+    if (has) return;
+    for (const sword of SWORDS) {
+      if (await getStorage().fetchFromStorage(sword, 1)) return;
+    }
+  }
+
+  async function ensureFood() {
+    const has = bot.inventory.items().find(i => FOODS.includes(i.name));
+    if (has) return;
+    for (const food of FOODS) {
+      if (await getStorage().fetchFromStorage(food, 8)) return;
+    }
   }
 
   async function run() {
     if (active) return;
     active = true;
     try {
-      // Auto makan jika lapar
       if (bot.food < 14) {
         const food = bot.inventory.items().find(i => FOODS.includes(i.name));
         if (food) {
           await bot.equip(food, 'hand');
           await bot.consume().catch(() => {});
-        }
+        } else await ensureFood();
       }
 
-      await equipArmor();
+      await equipBest(bot, ARMORS.head, 'head');
+      await equipBest(bot, ARMORS.torso, 'torso');
+      await equipBest(bot, ARMORS.legs, 'legs');
+      await equipBest(bot, ARMORS.feet, 'feet');
 
-      const hostile = getNearestHostile();
+      const hostile = getHostile();
       if (!hostile) {
         civ.updateState(s => {
           s.threats.hostileMobs = false;
@@ -113,15 +128,13 @@ module.exports = function combatSkill(bot, mcData) {
         return;
       }
 
-      // FIX BUG 2: Equip sword terbaik
+      await ensureWeapon();
       await equipBest(bot, SWORDS, 'hand');
-
       await withUnstuck(bot, () =>
         bot.pathfinder.goto(
           new goals.GoalNear(hostile.position.x, hostile.position.y, hostile.position.z, 2)
         )
       );
-
       if (hostile.isValid) {
         bot.attack(hostile);
         civ.updateState(s => {
